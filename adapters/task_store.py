@@ -34,15 +34,16 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.client import HTTPMessage
 import uuid
 from datetime import date, datetime, timedelta, UTC
 from pathlib import Path
-from typing import Any, Protocol
+from typing import IO, Any, Protocol
 
 try:
     from recurring_step import next_due_dates  # noqa: F401 - kept from the solo-empire copy; removal needs review
 except ImportError:  # imported as a package module
-    from .recurring_step import next_due_dates  # type: ignore[no-redef]  # noqa: F401
+    from .recurring_step import next_due_dates  # type: ignore[no-redef,import-not-found]  # noqa: F401 - package-mode fallback from the solo-empire copy; this repo always takes the flat import above
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TOKEN_DIR = PROJECT_ROOT / ".runtime" / "automation-tokens"
@@ -185,7 +186,7 @@ def client_settings(environ: Any = None) -> dict[str, str]:
 
 
 class TaskStoreError(RuntimeError):
-    def __init__(self, status: int, reason: str) -> None:
+    def __init__(self, status: int, reason: str | None) -> None:
         super().__init__(f"{status}: {reason}")
         self.status = status
         self.reason = reason
@@ -271,7 +272,7 @@ def link_relation(target_type: str, attributes: dict[str, Any]) -> str:
     return "related-to"
 
 
-def _link_order(link: dict[str, Any]) -> tuple:
+def _link_order(link: dict[str, Any]) -> tuple[Any, ...]:
     target = link["target_id"]
     return (
         link["task"],
@@ -280,10 +281,15 @@ def _link_order(link: dict[str, Any]) -> tuple:
     )
 
 
+# Both stores have a method named ``list``, which shadows the builtin inside their class bodies.
+_Rows = list[dict[str, Any]]
+_Numbers = list[int]
+
+
 class TaskStore(Protocol):
     def get(self, number: int) -> dict[str, Any] | None: ...
     def find_external(self, source: str, external_id: str) -> dict[str, Any] | None: ...
-    def list(self, **filters: Any) -> list[dict[str, Any]]: ...
+    def list(self, **filters: Any) -> _Rows: ...
     def stats(
         self, *, group_by: str | None = None, **filters: Any
     ) -> dict[str, Any]: ...
@@ -293,7 +299,7 @@ class TaskStore(Protocol):
         task: int | None = None,
         target_type: str | None = None,
         target_id: int | None = None,
-    ) -> list[dict[str, Any]]: ...
+    ) -> _Rows: ...
     def link(
         self,
         task: int,
@@ -318,7 +324,7 @@ class TaskStore(Protocol):
         assignee_type: str | None = None,
         assignee_id: str | None = None,
         assignment_type: str | None = None,
-    ) -> list[dict[str, Any]]: ...
+    ) -> _Rows: ...
     def assign(
         self,
         task: int,
@@ -335,7 +341,7 @@ class TaskStore(Protocol):
         source_registry: str | None = None,
         review_status: str | None = None,
         confidence: str | None = None,
-    ) -> list[dict[str, Any]]: ...
+    ) -> _Rows: ...
     def suggest_role(
         self,
         task: int,
@@ -360,11 +366,11 @@ class TaskStore(Protocol):
         source_registry: str,
         only_status: str | None = None,
     ) -> bool: ...
-    def dependencies(self, *, task: int | None = None) -> list[dict[str, Any]]: ...
+    def dependencies(self, *, task: int | None = None) -> _Rows: ...
     def add_dependency(
         self, task: int, depends_on: int, dependency_type: str = "finish_to_start"
     ) -> str: ...
-    def task_types(self, *, include_inactive: bool = False) -> list[dict[str, Any]]: ...
+    def task_types(self, *, include_inactive: bool = False) -> _Rows: ...
     def create(
         self, fields: dict[str, Any], *, legacy: dict[str, Any] | None = None
     ) -> int: ...
@@ -391,7 +397,7 @@ class TaskStore(Protocol):
     def record_reminder_delivered(
         self, number: int, reminder_at: str, channel: str
     ) -> bool: ...
-    def generate_occurrences(self, number: int, until: str) -> list[int]: ...
+    def generate_occurrences(self, number: int, until: str) -> _Numbers: ...
 
 
 def _record(row: dict[str, Any]) -> dict[str, Any]:
@@ -443,7 +449,15 @@ def _local_day_start(day: str) -> str:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Never follow a redirect: the Bearer token must not be forwarded to another host."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
         return None
 
 
@@ -472,8 +486,8 @@ class ApiTaskStore:
         method: str,
         path: str,
         body: Any = None,
-        params: dict | None = None,
-        headers: dict | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> Any:
         query = f"?{urllib.parse.urlencode(params, doseq=True)}" if params else ""
         data = json.dumps(body).encode() if body is not None else None
@@ -525,7 +539,7 @@ class ApiTaskStore:
             body["due_date"] = _date(body["due_date"])
         return body
 
-    def get(self, number):
+    def get(self, number: int) -> dict[str, Any] | None:
         try:
             return self._record(self._call("GET", f"/v1/tasks/number/{number}"))
         except TaskStoreError as error:
@@ -533,7 +547,7 @@ class ApiTaskStore:
                 return None
             raise
 
-    def find_external(self, source, external_id):
+    def find_external(self, source: str, external_id: str) -> dict[str, Any] | None:
         try:
             return self._record(
                 self._call(
@@ -578,8 +592,9 @@ class ApiTaskStore:
         *,
         cursor: bool = False,
         limit: int = 200,
-    ) -> list[dict]:
-        items, after, offset = [], None, 0
+    ) -> _Rows:
+        items: _Rows = []
+        after, offset = None, 0
         while True:
             page_params = {
                 **params,
@@ -593,7 +608,7 @@ class ApiTaskStore:
                 return items
             after, offset = page[-1].get("number"), offset + limit
 
-    def list(self, **filters):
+    def list(self, **filters: Any) -> _Rows:
         numbers = filters.get("numbers")
         if (
             numbers and len(numbers) > 500
@@ -611,7 +626,7 @@ class ApiTaskStore:
             for task in self._pages("/v1/tasks", self._params(filters), cursor=True)
         ]
 
-    def stats(self, *, group_by=None, **filters):
+    def stats(self, *, group_by: str | None = None, **filters: Any) -> dict[str, Any]:
         params = self._params(filters)
         if group_by:
             params["group_by"] = group_by
@@ -627,7 +642,13 @@ class ApiTaskStore:
         tail = ref.removeprefix(prefix)
         return int(tail) if tail.isdigit() else ref
 
-    def links(self, *, task=None, target_type=None, target_id=None):
+    def links(
+        self,
+        *,
+        task: int | None = None,
+        target_type: str | None = None,
+        target_id: int | None = None,
+    ) -> _Rows:
         params: dict[str, Any] = {}
         if task is not None:
             params["task"] = task
@@ -637,7 +658,7 @@ class ApiTaskStore:
             if not target_type:
                 raise ValueError("target_id needs target_type")
             params["target_ref"] = f"{LINK_TABLES[target_type][2]}{target_id}"
-        records = []
+        records: _Rows = []
         for item in self._pages("/v1/task-links", params, limit=500):
             if item["target_type"] not in LINK_TABLES:
                 continue
@@ -658,7 +679,13 @@ class ApiTaskStore:
         return sorted(records, key=_link_order)
 
     def link(
-        self, task, target_type, target_id, attributes=None, *, update=False
+        self,
+        task: int,
+        target_type: str,
+        target_id: int,
+        attributes: dict[str, Any] | None = None,
+        *,
+        update: bool = False,
     ) -> str:
         attributes = dict(attributes or {})
         unknown = set(attributes) - LINK_ATTRIBUTES[target_type]
@@ -686,7 +713,14 @@ class ApiTaskStore:
         )
         return "updated" if existing else "created"
 
-    def unlink(self, task, target_type, target_id, *, source_registry=None) -> bool:
+    def unlink(
+        self,
+        task: int,
+        target_type: str,
+        target_id: int,
+        *,
+        source_registry: str | None = None,
+    ) -> bool:
         existing = [
             link
             for link in self.links(
@@ -705,11 +739,16 @@ class ApiTaskStore:
                 "target_ref": f"{LINK_TABLES[target_type][2]}{target_id}",
             },
         )
-        return result["outcome"] == "removed"
+        return bool(result["outcome"] == "removed")
 
     def assignments(
-        self, *, task=None, assignee_type=None, assignee_id=None, assignment_type=None
-    ):
+        self,
+        *,
+        task: int | None = None,
+        assignee_type: str | None = None,
+        assignee_id: str | None = None,
+        assignment_type: str | None = None,
+    ) -> _Rows:
         params = {
             k: v
             for k, v in {
@@ -735,11 +774,11 @@ class ApiTaskStore:
 
     def assign(
         self,
-        task,
-        assignee_type,
-        assignee_id,
-        assignee_name=None,
-        assignment_type="assigned",
+        task: int,
+        assignee_type: str,
+        assignee_id: str,
+        assignee_name: str | None = None,
+        assignment_type: str = "assigned",
     ) -> str:
         result = self._call(
             "PUT",
@@ -751,17 +790,18 @@ class ApiTaskStore:
                 "assignment_type": assignment_type,
             },
         )
-        return result["outcome"]
+        outcome: str = result["outcome"]
+        return outcome
 
     def role_suggestions(
         self,
         *,
-        task=None,
-        role_id=None,
-        source_registry=None,
-        review_status=None,
-        confidence=None,
-    ):
+        task: int | None = None,
+        role_id: str | None = None,
+        source_registry: str | None = None,
+        review_status: str | None = None,
+        confidence: str | None = None,
+    ) -> _Rows:
         params = {
             k: v
             for k, v in {
@@ -788,12 +828,12 @@ class ApiTaskStore:
 
     def suggest_role(
         self,
-        task,
-        role_id,
-        source_registry,
-        confidence,
-        match_reason,
-        review_status=None,
+        task: int,
+        role_id: str,
+        source_registry: str,
+        confidence: str,
+        match_reason: str,
+        review_status: str | None = None,
     ) -> str:
         body = {
             "role_id": role_id,
@@ -803,12 +843,18 @@ class ApiTaskStore:
         }
         if review_status:
             body["review_status"] = review_status
-        return self._call("PUT", f"/v1/tasks/{self._id(task)}/role-suggestions", body)[
-            "outcome"
-        ]
+        outcome: str = self._call(
+            "PUT", f"/v1/tasks/{self._id(task)}/role-suggestions", body
+        )["outcome"]
+        return outcome
 
     def review_role(
-        self, task, role_id, source_registry, review_status, expected_status=None
+        self,
+        task: int,
+        role_id: str,
+        source_registry: str,
+        review_status: str,
+        expected_status: str | None = None,
     ) -> bool:
         body = {
             "role_id": role_id,
@@ -817,26 +863,32 @@ class ApiTaskStore:
         }
         if expected_status:
             body["expected_status"] = expected_status
-        return (
+        return bool(
             self._call("PATCH", f"/v1/tasks/{self._id(task)}/role-suggestions", body)[
                 "outcome"
             ]
             == "updated"
         )
 
-    def withdraw_role(self, task, role_id, source_registry, only_status=None) -> bool:
+    def withdraw_role(
+        self,
+        task: int,
+        role_id: str,
+        source_registry: str,
+        only_status: str | None = None,
+    ) -> bool:
         params = {"role_id": role_id, "source_registry": source_registry}
         if only_status:
             params["only_status"] = only_status
-        return (
+        return bool(
             self._call(
                 "DELETE", f"/v1/tasks/{self._id(task)}/role-suggestions", params=params
             )["outcome"]
             == "removed"
         )
 
-    def dependencies(self, *, task=None):
-        params = {"task": task} if task is not None else {}
+    def dependencies(self, *, task: int | None = None) -> _Rows:
+        params: dict[str, Any] = {"task": task} if task is not None else {}
         return [
             {
                 "task": d["task_number"],
@@ -847,16 +899,17 @@ class ApiTaskStore:
         ]
 
     def add_dependency(
-        self, task, depends_on, dependency_type="finish_to_start"
+        self, task: int, depends_on: int, dependency_type: str = "finish_to_start"
     ) -> str:
         """Idempotent: 'created' or 'unchanged'."""
-        return self._call(
+        outcome: str = self._call(
             "PUT",
             f"/v1/tasks/{self._id(task)}/dependencies",
             {"depends_on": depends_on, "dependency_type": dependency_type},
         )["outcome"]
+        return outcome
 
-    def task_types(self, *, include_inactive=False):
+    def task_types(self, *, include_inactive: bool = False) -> _Rows:
         items = self._call(
             "GET",
             "/v1/task-types",
@@ -882,16 +935,25 @@ class ApiTaskStore:
             for t in items
         ]
 
-    def create(self, fields, *, legacy=None) -> int:
+    def create(
+        self, fields: dict[str, Any], *, legacy: dict[str, Any] | None = None
+    ) -> int:
         body = self._body(fields)
         status = body.pop("status", None)
         task = self._call("POST", "/v1/tasks", body)
-        number = self._record(task)["id"]
+        number: int = self._record(task)["id"]
         if status and status != "todo":
             self.update(number, {"status": status})
         return number
 
-    def upsert_external(self, source, external_id, fields, *, legacy=None):
+    def upsert_external(
+        self,
+        source: str,
+        external_id: str,
+        fields: dict[str, Any],
+        *,
+        legacy: dict[str, Any] | None = None,
+    ) -> tuple[str, int]:
         result = self._call(
             "PUT",
             f"/v1/tasks/external/{source}/{urllib.parse.quote(str(external_id), safe='')}",
@@ -899,7 +961,13 @@ class ApiTaskStore:
         )
         return result["outcome"], self._record(result["task"])["id"]
 
-    def update(self, number, fields, *, legacy=None) -> None:
+    def update(
+        self,
+        number: int,
+        fields: dict[str, Any],
+        *,
+        legacy: dict[str, Any] | None = None,
+    ) -> None:
         body = self._body(fields)
         if body.get("status") == "done":
             body.pop("status")
@@ -910,16 +978,18 @@ class ApiTaskStore:
         if body:
             self._call("PATCH", f"/v1/tasks/{self._id(number)}", body)
 
-    def complete(self, number, *, legacy=None) -> None:
+    def complete(self, number: int, *, legacy: dict[str, Any] | None = None) -> None:
         self._call("POST", f"/v1/tasks/{self._id(number)}/complete")
 
-    def archive(self, number, reason) -> None:
+    def archive(self, number: int, reason: str) -> None:
         self._call("POST", f"/v1/tasks/{self._id(number)}/archive", {"reason": reason})
 
-    def unarchive(self, number) -> None:
+    def unarchive(self, number: int) -> None:
         self._call("POST", f"/v1/tasks/{self._id(number)}/unarchive")
 
-    def record_reminder_delivered(self, number, reminder_at, channel) -> bool:
+    def record_reminder_delivered(
+        self, number: int, reminder_at: str, channel: str
+    ) -> bool:
         at = (
             reminder_at
             if "T" in reminder_at or "+" in reminder_at
@@ -930,9 +1000,9 @@ class ApiTaskStore:
             f"/v1/tasks/{self._id(number)}/reminders/delivered",
             {"reminder_at": at, "channel": channel},
         )
-        return result["outcome"] == "recorded"
+        return bool(result["outcome"] == "recorded")
 
-    def generate_occurrences(self, number, until) -> list[int]:
+    def generate_occurrences(self, number: int, until: str) -> _Numbers:
         result = self._call(
             "POST",
             f"/v1/tasks/{self._id(number)}/occurrences/generate",

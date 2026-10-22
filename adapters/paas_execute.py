@@ -12,9 +12,11 @@ import json
 import re
 import sys
 import urllib.request
+from http.client import HTTPMessage
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any
+from collections.abc import Callable
+from typing import IO, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from platform_output import configure_utf8_stdio  # noqa: E402
@@ -22,7 +24,11 @@ import paas_action as actions
 from auth_resolver import resolve_provider_auth  # noqa: E402
 from cloud_providers import get_provider  # noqa: E402
 from paas_health import _safe_error
-from decision_store import DecisionStoreError, open_decision_store  # noqa: E402  (utils path set by paas_action)
+from decision_store import (  # noqa: E402  (utils path set by paas_action)
+    ApiDecisionStore,
+    DecisionStoreError,
+    open_decision_store,
+)
 
 ACTOR = "paas_executor"
 API = "https://api.render.com/v1"
@@ -40,7 +46,7 @@ def require(condition: Any, code: str) -> None:
         raise GateError(code)
 
 
-def resource(payload: Any, key: str) -> dict:
+def resource(payload: Any, key: str) -> dict[str, Any]:
     """Accept Render's direct and wrapped response shapes without retaining payload."""
     if isinstance(payload, dict):
         nested = payload.get(key)
@@ -48,12 +54,13 @@ def resource(payload: Any, key: str) -> dict:
             return nested
         data = payload.get("data")
         if isinstance(data, dict) and isinstance(data.get(key), dict):
-            return data[key]
+            wrapped: dict[str, Any] = data[key]
+            return wrapped
         return payload
     return {}
 
 
-def items(payload: Any, key: str) -> list[dict]:
+def items(payload: Any, key: str) -> list[dict[str, Any]]:
     raw: Any = payload
     if isinstance(payload, dict):
         raw = next(
@@ -74,19 +81,27 @@ def items(payload: Any, key: str) -> list[dict]:
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
         raise GateError("redirect-refused")
 
 
 class Render:
-    def __init__(self):
+    def __init__(self) -> None:
         auth = resolve_provider_auth(get_provider("render"))
         if auth.status != "configured" or auth.credential is None:
             raise GateError("render-credential-unavailable")
         self.token = auth.credential
 
     def call(
-        self, path: str, body: dict | None = None, method: str | None = None
+        self, path: str, body: dict[str, Any] | None = None, method: str | None = None
     ) -> Any:
         verb = method or ("GET" if body is None else "POST")
         request = urllib.request.Request(
@@ -108,7 +123,7 @@ class Render:
         require(len(raw) <= 1024 * 1024, "provider-response-too-large")
         return json.loads(raw) if raw else {}
 
-    def service(self, request: dict) -> dict:
+    def service(self, request: dict[str, Any]) -> dict[str, Any]:
         service = resource(self.call(f"/services/{request['resource_id']}"), "service")
         require(
             isinstance(service, dict) and service.get("id") == request["resource_id"],
@@ -122,7 +137,7 @@ class Render:
         require(service.get("suspended") == "not_suspended", "service-not-active")
         return service
 
-    def preflight(self, request: dict) -> dict:
+    def preflight(self, request: dict[str, Any]) -> dict[str, Any]:
         service = self.service(request)
         environment = resource(
             self.call(f"/environments/{request['environment_id']}"), "environment"
@@ -192,13 +207,13 @@ class Render:
         self.health_url(service, request)
         return {"previous_deploy_id": previous}
 
-    def _deploy_rows(self, service_id: str) -> list[dict]:
+    def _deploy_rows(self, service_id: str) -> list[dict[str, Any]]:
         rows = items(self.call(f"/services/{service_id}/deploys?limit=20"), "deploy")
         require(rows, "invalid-deploy-list")
         return rows
 
     @staticmethod
-    def auto_deploy_value(service: dict) -> str | None:
+    def auto_deploy_value(service: dict[str, Any]) -> str | None:
         value = service.get("autoDeploy")
         if value is True or value == "yes":
             return "yes"
@@ -207,38 +222,39 @@ class Render:
         return None
 
     @staticmethod
-    def health_url(service: dict, request: dict) -> str:
-        details = (
-            service.get("serviceDetails")
-            if isinstance(service.get("serviceDetails"), dict)
-            else {}
-        )
+    def health_url(service: dict[str, Any], request: dict[str, Any]) -> str:
+        raw_details = service.get("serviceDetails")
+        details = raw_details if isinstance(raw_details, dict) else {}
         url = details.get("url") or service.get("url") or ""
         require(
             isinstance(url, str)
             and re.fullmatch(r"https://[a-z0-9-]+\.onrender\.com/?", url),
             "render-hosted-health-url-required",
         )
-        return url.rstrip("/") + request["health_path"]
+        health_path: str = request["health_path"]  # validate() checked it is a path
+        return url.rstrip("/") + health_path
 
-    def submit(self, request: dict) -> dict:
+    def submit(self, request: dict[str, Any]) -> dict[str, Any]:
         path = f"/services/{request['resource_id']}"
+        response: dict[str, Any]
         if request["action"] == "deploy":
-            return self.call(
+            response = self.call(
                 path + "/deploys",
                 {"commitId": request["target_revision"], "clearCache": "do_not_clear"},
             )
-        if request["action"] == "rollback":
-            return self.call(
+        elif request["action"] == "rollback":
+            response = self.call(
                 path + "/rollback", {"deployId": request["rollback_target"]}
             )
-        if request["action"] == "set-auto-deploy":
-            return self.call(
+        elif request["action"] == "set-auto-deploy":
+            response = self.call(
                 path, {"autoDeploy": request["auto_deploy"]}, method="PATCH"
             )
-        return self.call(path + "/restart", {})
+        else:
+            response = self.call(path + "/restart", {})
+        return response
 
-    def verify(self, request: dict, attempt: dict) -> str:
+    def verify(self, request: dict[str, Any], attempt: dict[str, Any]) -> str:
         if request["action"] == "set-auto-deploy":
             service = self.service(request)
             require(
@@ -285,7 +301,7 @@ class Render:
             require(200 <= response.status < 300, "health-check-failed")
         return "succeeded"
 
-    def reconcile(self, request: dict, attempt: dict) -> str:
+    def reconcile(self, request: dict[str, Any], attempt: dict[str, Any]) -> str:
         """Resolve an ambiguous submission from provider read evidence only.
 
         A restart has no provider action identity in Render's response and
@@ -332,7 +348,7 @@ class Render:
         return self.verify(request, {**attempt, "provider_action_id": match.get("id")})
 
 
-def validate(request: dict) -> None:
+def validate(request: dict[str, Any]) -> None:
     require(request.get("provider") == "render", "provider-adapter-unavailable")
     require(request.get("resource_type") == "service", "service-resource-required")
     for field, prefix in (("resource_id", "srv-"), ("environment_id", "evm-")):
@@ -377,25 +393,27 @@ def validate(request: dict) -> None:
         )
 
 
-def connection(read_only=False):
+def connection(read_only: bool = False) -> ApiDecisionStore:
     """The decisions cell store (``read_only`` kept for callers; the API decides what is allowed)."""
     return open_decision_store("paas-operator")
 
 
-def read_record(store, decision_id: int) -> tuple[dict, dict, list[dict]]:
+def read_record(
+    store: ApiDecisionStore, decision_id: int
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     row = store.get(decision_id)
-    require(
+    if not (
         row is not None
         and row["domain"] == "paas"
         and row["source_type"] == "paas_action"
-        and row["privacy_class"] == "internal",
-        "paas-decision-not-found",
-    )
+        and row["privacy_class"] == "internal"
+    ):
+        raise GateError("paas-decision-not-found")
     events = store.history(
         decision_id
     )  # the whole history: the registration event is the oldest
     request = None
-    attempts = []
+    attempts: list[dict[str, Any]] = []
     for event in events:
         data = (
             event["metadata"]
@@ -406,7 +424,8 @@ def read_record(store, decision_id: int) -> tuple[dict, dict, list[dict]]:
             request = data["request"]
         if event["actor"] == ACTOR:
             attempts.append(data)
-    require(isinstance(request, dict), "legacy-proposal-requires-new-registration")
+    if not isinstance(request, dict):
+        raise GateError("legacy-proposal-requires-new-registration")
     require(
         row["source_ref"] == "paas-proposal:" + actions.proposal_fingerprint(request),
         "stored-proposal-mismatch",
@@ -418,11 +437,11 @@ def read_record(store, decision_id: int) -> tuple[dict, dict, list[dict]]:
     )
 
 
-def require_lock_schema(row: dict) -> None:
+def require_lock_schema(row: dict[str, Any]) -> None:
     require("execution_lock_key" in row, "execution-lock-schema-required")
 
 
-def snapshot(decision_id: int) -> dict:
+def snapshot(decision_id: int) -> dict[str, Any]:
     row, request, attempts = read_record(connection(True), decision_id)
     return {
         "decision_id": decision_id,
@@ -435,19 +454,19 @@ def snapshot(decision_id: int) -> dict:
 
 
 def update(
-    store,
-    row: dict,
+    store: ApiDecisionStore,
+    row: dict[str, Any],
     state: str,
-    metadata: dict,
-    event_type="refreshed",
-    extra: dict | None = None,
-) -> dict:
+    metadata: dict[str, Any],
+    event_type: str = "refreshed",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """One change: action state (and outcome), lock release, and the attempt event; refuses a concurrent change."""
     release_lock = state in {"executed", "failed"} or metadata.get("status") in {
         "succeeded",
         "failed",
     }
-    fields: dict = {"action_status": state, **(extra or {})}
+    fields: dict[str, Any] = {"action_status": state, **(extra or {})}
     if release_lock:
         fields["execution_lock_key"] = None
     if state == "executed":
@@ -466,7 +485,7 @@ def update(
     )
 
 
-def approve(decision_id: int, proposal_id: str) -> dict:
+def approve(decision_id: int, proposal_id: str | None) -> dict[str, Any]:
     # Approving is the owner's act (decisions.decision:approve), not the PaaS operator automation's.
     store = open_decision_store("owner-cli", channel="cli")
     now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -504,7 +523,9 @@ def approve(decision_id: int, proposal_id: str) -> dict:
     return snapshot(decision_id)
 
 
-def execute(decision_id: int, adapter_factory=Render) -> dict:
+def execute(
+    decision_id: int, adapter_factory: Callable[[], Render] = Render
+) -> dict[str, Any]:
     current = snapshot(decision_id)
     request = current["request"]
     validate(request)
@@ -584,7 +605,9 @@ def execute(decision_id: int, adapter_factory=Render) -> dict:
     return snapshot(decision_id)
 
 
-def verify(decision_id: int, adapter_factory=Render) -> dict:
+def verify(
+    decision_id: int, adapter_factory: Callable[[], Render] = Render
+) -> dict[str, Any]:
     current = snapshot(decision_id)
     attempt = current["attempt"]
     require(attempt is not None, "execution-not-submitted")
@@ -636,7 +659,9 @@ def verify(decision_id: int, adapter_factory=Render) -> dict:
     return snapshot(decision_id)
 
 
-def reconcile(decision_id: int, adapter_factory=Render) -> dict:
+def reconcile(
+    decision_id: int, adapter_factory: Callable[[], Render] = Render
+) -> dict[str, Any]:
     """Read provider state to resolve a claimed ambiguous submission."""
     current = snapshot(decision_id)
     attempt = current["attempt"]
@@ -692,11 +717,12 @@ def reconcile(decision_id: int, adapter_factory=Render) -> dict:
     return snapshot(decision_id)
 
 
-def dispatch(command: dict) -> dict:
+def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     operation = command.get("operation")
     if operation == "register":
         source = command.get("request")
-        require(isinstance(source, dict), "request-required")
+        if not isinstance(source, dict):
+            raise GateError("request-required")
         fields = {
             key: source.get(key)
             for key in (
@@ -722,7 +748,8 @@ def dispatch(command: dict) -> dict:
         result = actions.register_proposal(proposal)
         return snapshot(result["decision_id"])
     decision_id = command.get("decision_id")
-    require(type(decision_id) is int and decision_id > 0, "decision-id-required")
+    if not (type(decision_id) is int and decision_id > 0):
+        raise GateError("decision-id-required")
     if operation == "status":
         return snapshot(decision_id)
     require(command.get("confirm") is True, "explicit-confirmation-required")

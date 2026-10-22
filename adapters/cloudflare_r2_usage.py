@@ -281,7 +281,8 @@ def _healthy_result(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict) or payload.get("success") is not True:
         return _live_error("cloudflare_api_error")
 
-    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    raw_result = payload.get("result")
+    result = raw_result if isinstance(raw_result, dict) else {}
     storage_classes = {
         "standard": _class_metrics(result.get("standard")),
         "infrequent_access": _class_metrics(result.get("infrequentAccess")),

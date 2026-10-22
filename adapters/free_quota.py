@@ -102,16 +102,10 @@ def _r2_row(r2_usage: dict[str, Any]) -> dict[str, Any]:
         },
     }
     if status == "healthy":
-        estimate = (
-            r2_usage.get("storage_cost_estimate")
-            if isinstance(r2_usage.get("storage_cost_estimate"), dict)
-            else {}
-        )
-        standard = (
-            estimate.get("standard")
-            if isinstance(estimate.get("standard"), dict)
-            else {}
-        )
+        raw_estimate = r2_usage.get("storage_cost_estimate")
+        estimate = raw_estimate if isinstance(raw_estimate, dict) else {}
+        raw_standard = estimate.get("standard")
+        standard = raw_standard if isinstance(raw_standard, dict) else {}
         used = _number(standard.get("payload_gb"))
         if used is not None:
             limit = _number(standard.get("free_gb_month")) or 10
@@ -166,11 +160,8 @@ def _github_actions_row(actions_usage: dict[str, Any]) -> dict[str, Any]:
     status = str(actions_usage.get("status") or "not_checked")
     if status == "healthy":
         used = _number(actions_usage.get("actions_minutes"))
-        allowance = (
-            actions_usage.get("free_allowance")
-            if isinstance(actions_usage.get("free_allowance"), dict)
-            else {}
-        )
+        raw_allowance = actions_usage.get("free_allowance")
+        allowance = raw_allowance if isinstance(raw_allowance, dict) else {}
         limit = _number(allowance.get("minutes"))
         if used is not None:
             observed: dict[str, Any] = {

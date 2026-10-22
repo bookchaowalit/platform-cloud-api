@@ -27,9 +27,10 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
+from http.client import HTTPMessage
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -136,11 +137,8 @@ def _extract_resource(payload: Any, resource_key: str) -> dict[str, Any]:
 
 def _render_health_host(service: dict[str, Any]) -> str | None:
     """Return only a provider-owned Render host suitable for health probes."""
-    details = (
-        service.get("serviceDetails")
-        if isinstance(service.get("serviceDetails"), dict)
-        else {}
-    )
+    raw_details = service.get("serviceDetails")
+    details = raw_details if isinstance(raw_details, dict) else {}
     raw_url = details.get("url") or service.get("url") or ""
     if not isinstance(raw_url, str):
         return None
@@ -250,7 +248,15 @@ def _clean_deploy(
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
     """Keep each health probe on its explicitly selected URL."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
         return None
 
 
@@ -272,10 +278,10 @@ def _probe_url(url: str) -> dict[str, Any]:
             "http_status": status,
         }
     except Exception as exc:
-        status = getattr(exc, "code", None)
+        error_status = getattr(exc, "code", None)
         result: dict[str, Any] = {"status": "blocked", "error_class": _safe_error(exc)}
-        if isinstance(status, int):
-            result["http_status"] = status
+        if isinstance(error_status, int):
+            result["http_status"] = error_status
         return result
 
 
@@ -377,6 +383,8 @@ def discover(
             else "render-credential-not-configured"
         ]
         return payload
+    # Non-empty whenever source is "api" (the only branch that sends it), checked just above.
+    api_token = token or ""
 
     try:
         if source == "cli":
@@ -393,7 +401,7 @@ def discover(
             params = {"limit": str(limit), "includePreviews": "false"}
             if selected_environment:
                 params["environmentId"] = selected_environment
-            response = _get_json(_api_url("/services", params), _headers(token))
+            response = _get_json(_api_url("/services", params), _headers(api_token))
             payload["external_calls"] += 1
             services = [
                 _clean_service(item) for item in _extract_items(response, "service")
@@ -417,7 +425,7 @@ def discover(
                     _api_url(
                         f"/services/{urllib.parse.quote(selected_service, safe='')}"
                     ),
-                    _headers(token),
+                    _headers(api_token),
                 )
                 payload["external_calls"] += 1
                 detail = _extract_resource(detail_response, "service")
@@ -456,7 +464,7 @@ def discover(
                         f"/services/{urllib.parse.quote(selected_service, safe='')}/deploys",
                         {"limit": "20"},
                     ),
-                    _headers(token),
+                    _headers(api_token),
                 )
             payload["external_calls"] += 1
             payload["deploys"] = [
@@ -509,7 +517,7 @@ def _preflight_cli(
             return _finish_preflight(payload, blockers)
         service_data, environment_data = match
         cleaned_service = _clean_service(service_data, environment_data.get("name"))
-        service_check = {"status": "passed", "service": cleaned_service}
+        service_check: dict[str, Any] = {"status": "passed", "service": cleaned_service}
         if service_data.get("id") != service:
             blockers.append("service-id-mismatch")
         actual_environment_id = service_data.get(
@@ -652,6 +660,9 @@ def preflight(
             environment.lower(),
         )
 
+    assert (
+        token is not None
+    )  # source is "api" and live here; a missing token blocked above
     headers = _headers(token)
 
     try:
@@ -662,7 +673,7 @@ def preflight(
         payload["external_calls"] += 1
         service_data = _extract_resource(raw_service, "service")
         cleaned_service = _clean_service(service_data)
-        service_check = {"status": "passed", "service": cleaned_service}
+        service_check: dict[str, Any] = {"status": "passed", "service": cleaned_service}
         if service_data.get("id") != service:
             blockers.append("service-id-mismatch")
         if service_data.get("environmentId") != environment_ref:
@@ -857,11 +868,8 @@ def action_preflight(
         blockers.append("invalid-environment")
     if not live:
         blockers.append("live-check-required")
-    if (
-        action == "deploy"
-        and not isinstance(target_revision, str)
-        or action == "deploy"
-        and not FULL_SHA.fullmatch(target_revision)
+    if action == "deploy" and (
+        not isinstance(target_revision, str) or not FULL_SHA.fullmatch(target_revision)
     ):
         blockers.append("full-commit-sha-required")
     if action == "set-auto-deploy" and auto_deploy not in {"yes", "no"}:
@@ -891,7 +899,7 @@ def action_preflight(
     payload["external_calls"] += int(discovery.get("external_calls") or 0)
     payload["credentials"] = discovery.get("credentials", payload["credentials"])
     services = discovery.get("services") or []
-    if discovery.get("status") not in {"ready"} or not services:
+    if discovery.get("status") != "ready" or not services:
         blockers.extend(
             discovery.get("blockers") or ["render-services-discovery-failed"]
         )

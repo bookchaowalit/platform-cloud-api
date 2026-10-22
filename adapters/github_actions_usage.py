@@ -458,10 +458,9 @@ def run_usage(
             if not owner:
                 raise AdapterError("invalid_github_identity_response")
             if plan is None and isinstance(identity, dict):
+                raw_identity_plan = identity.get("plan")
                 identity_plan = (
-                    identity.get("plan")
-                    if isinstance(identity.get("plan"), dict)
-                    else {}
+                    raw_identity_plan if isinstance(raw_identity_plan, dict) else {}
                 )
                 plan = _normalise_plan(identity_plan.get("name"))
         elif raw_owner_type == "organization" and owner is None:
@@ -481,10 +480,9 @@ def run_usage(
                     f"{API_BASE}/orgs/{urllib.parse.quote(owner, safe='')}", headers
                 )
                 if isinstance(metadata, dict):
+                    raw_metadata_plan = metadata.get("plan")
                     metadata_plan = (
-                        metadata.get("plan")
-                        if isinstance(metadata.get("plan"), dict)
-                        else {}
+                        raw_metadata_plan if isinstance(raw_metadata_plan, dict) else {}
                     )
                     plan = _normalise_plan(metadata_plan.get("name"))
             except Exception:

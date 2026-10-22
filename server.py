@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, UTC
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from collections.abc import Mapping
 from urllib.parse import parse_qs, urlsplit
 
@@ -45,6 +45,7 @@ import paas_action  # noqa: E402
 import paas_execute  # noqa: E402
 import paas_inventory  # noqa: E402
 import render_preflight  # noqa: E402
+from error_reporting import capture, init_sentry  # noqa: E402
 
 
 SERVICE_NAME = "solo-empire-cloud-api"
@@ -133,10 +134,15 @@ def _json_body(body: bytes | None) -> dict[str, Any]:
     return parsed
 
 
+def _query_first(query: Mapping[str, list[str]], name: str) -> str | None:
+    values = query.get(name)
+    return values[0] if values else None
+
+
 def _query_bool(
     query: Mapping[str, list[str]], name: str, default: bool = False
 ) -> bool:
-    raw = (query.get(name) or [None])[0]
+    raw = _query_first(query, name)
     if raw is None or raw == "":
         return default
     if raw.lower() in {"true", "1", "yes"}:
@@ -149,7 +155,7 @@ def _query_bool(
 def _query_int(
     query: Mapping[str, list[str]], name: str, default: int, minimum: int, maximum: int
 ) -> int:
-    raw = (query.get(name) or [None])[0]
+    raw = _query_first(query, name)
     if raw is None or raw == "":
         return default
     try:
@@ -323,8 +329,8 @@ class CloudApi:
             result = render_preflight.discover(
                 live=_query_bool(query, "live"),
                 source=(query.get("source") or ["api"])[0],
-                service_id=(query.get("service_id") or [None])[0],
-                environment_id=(query.get("environment_id") or [None])[0],
+                service_id=_query_first(query, "service_id"),
+                environment_id=_query_first(query, "environment_id"),
                 limit=_query_int(query, "limit", 20, 1, 100),
             )
             return Response(200, _contract_payload(result, "render_discovery"))
@@ -333,7 +339,7 @@ class CloudApi:
         except (ValueError, TypeError):
             raise ApiError(
                 400, "invalid Render discovery request", code="invalid_render_request"
-            )
+            ) from None
         except Exception:
             return self._unavailable("render_discovery_unavailable")
 
@@ -341,12 +347,12 @@ class CloudApi:
         live = _query_bool(query, "live")
         source = (query.get("source") or ["api"])[0]
         action = (query.get("action") or ["rollback"])[0]
-        service_id = (query.get("service_id") or [None])[0]
-        environment_id = (query.get("environment_id") or [None])[0]
+        service_id = _query_first(query, "service_id")
+        environment_id = _query_first(query, "environment_id")
         environment = (query.get("environment") or ["staging"])[0]
-        target_deploy_id = (query.get("target_deploy_id") or [None])[0]
-        target_revision = (query.get("target_revision") or [None])[0]
-        auto_deploy = (query.get("auto_deploy") or [None])[0]
+        target_deploy_id = _query_first(query, "target_deploy_id")
+        target_revision = _query_first(query, "target_revision")
+        auto_deploy = _query_first(query, "auto_deploy")
         health_path = (query.get("health_path") or ["/healthz"])[0]
         if not service_id or not environment_id:
             raise ApiError(
@@ -371,7 +377,7 @@ class CloudApi:
         except (ValueError, TypeError):
             raise ApiError(
                 400, "invalid Render preflight request", code="invalid_render_request"
-            )
+            ) from None
         except Exception:
             return self._unavailable("render_preflight_unavailable")
 
@@ -398,9 +404,10 @@ class CloudApi:
             return Response(
                 400, _error_payload("invalid_command", "PaaS command is invalid")
             )
-        except Exception:
+        except Exception as exc:
             # A provider timeout or an ambiguous submission must remain a
             # generic result; never return its body, URL, or traceback.
+            capture(exc)  # no-op unless SENTRY_DSN is set; messages are scrubbed
             return Response(
                 503,
                 _error_payload(
@@ -456,7 +463,7 @@ class CloudApi:
                 return self._cloud_usage(_query_bool(query, "live"))
             if path == "/api/v1/paas/inventory":
                 return self._inventory(
-                    _query_bool(query, "live"), (query.get("provider_id") or [None])[0]
+                    _query_bool(query, "live"), _query_first(query, "provider_id")
                 )
             if path == "/api/v1/paas/actions":
                 return self._actions()
@@ -470,10 +477,17 @@ class CloudApi:
             raise ApiError(404, "route not found", code="route_not_found")
         except ApiError as exc:
             return Response(exc.status, _error_payload(exc.code, exc.message))
-        except Exception:
+        except Exception as exc:
+            capture(exc)  # no-op unless SENTRY_DSN is set; messages are scrubbed
             return Response(
                 500, _error_payload("internal_error", "unexpected service error")
             )
+
+
+class CloudApiServer(ThreadingHTTPServer):
+    """The listening server; every request handler reads the shared ``CloudApi`` from it."""
+
+    cloud_api: CloudApi
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -483,7 +497,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     @property
     def api(self) -> CloudApi:
-        return self.server.cloud_api  # type: ignore[attr-defined]
+        return cast("CloudApiServer", self.server).cloud_api
 
     def _response_headers(self) -> dict[str, str]:
         origin = self.headers.get("Origin", "")
@@ -550,7 +564,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         response = self.api.handle(
             method,
             self.path,
-            headers=self.headers,
+            headers=dict(self.headers.items()),
             body=body,
             remote_address=self.client_address[0],
         )
@@ -581,8 +595,8 @@ def serve(host: str, port: int, api: CloudApi) -> None:
         raise ValueError(
             "CLOUD_API_TOKEN is required for a non-loopback or production Cloud API"
         )
-    httpd = ThreadingHTTPServer((host, port), RequestHandler)
-    httpd.cloud_api = api  # type: ignore[attr-defined]
+    httpd = CloudApiServer((host, port), RequestHandler)
+    httpd.cloud_api = api
     print(f"{SERVICE_NAME} listening on http://{host}:{port}")
     try:
         httpd.serve_forever()
@@ -601,6 +615,7 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
+    init_sentry()  # no-op unless SENTRY_DSN is set
     try:
         serve(args.host, args.port, CloudApi())
     except ValueError as exc:

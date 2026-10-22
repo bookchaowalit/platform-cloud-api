@@ -338,7 +338,8 @@ def _inventory_summary(
     for item in payload.get("providers", []) if isinstance(payload, dict) else []:
         if not isinstance(item, dict):
             continue
-        summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+        raw_summary = item.get("summary")
+        summary = raw_summary if isinstance(raw_summary, dict) else {}
         resource_count = int(summary.get("resources") or 0)
         partial = bool(item.get("partial") or summary.get("partial"))
         has_more = bool(item.get("has_more") or summary.get("has_more"))
@@ -367,11 +368,8 @@ def _inventory_summary(
             provider["credential_state"] = "verified_read_only"
         providers.append(provider)
 
-    summary = (
-        payload.get("summary")
-        if isinstance(payload, dict) and isinstance(payload.get("summary"), dict)
-        else {}
-    )
+    raw_summary = payload.get("summary") if isinstance(payload, dict) else None
+    summary = raw_summary if isinstance(raw_summary, dict) else {}
     normalized = {
         "schema_version": payload.get("schema_version", "solo-empire.paas-inventory.v1")
         if isinstance(payload, dict)
@@ -433,41 +431,28 @@ def _r2_summary(
 
     metric_fields = ("metadata_bytes", "object_count", "payload_bytes", "payload_gib")
     storage_classes: dict[str, dict[str, dict[str, int | float]]] = {}
-    raw_classes = (
-        payload.get("storage_classes")
-        if isinstance(payload.get("storage_classes"), dict)
-        else {}
-    )
+    classes_value = payload.get("storage_classes")
+    raw_classes = classes_value if isinstance(classes_value, dict) else {}
     for class_id in ("standard", "infrequent_access"):
-        raw_class = (
-            raw_classes.get(class_id)
-            if isinstance(raw_classes.get(class_id), dict)
-            else {}
-        )
+        class_value = raw_classes.get(class_id)
+        raw_class = class_value if isinstance(class_value, dict) else {}
         storage_classes[class_id] = {}
         for state in ("published", "uploaded"):
-            raw_group = (
-                raw_class.get(state) if isinstance(raw_class.get(state), dict) else {}
-            )
+            group_value = raw_class.get(state)
+            raw_group = group_value if isinstance(group_value, dict) else {}
             storage_classes[class_id][state] = {
                 field: _safe_non_negative_number(raw_group.get(field, 0))
                 for field in metric_fields
             }
 
     fallback_estimate = fallback["storage_cost_estimate"]
-    raw_estimate = (
-        payload.get("storage_cost_estimate")
-        if isinstance(payload.get("storage_cost_estimate"), dict)
-        else {}
-    )
+    estimate_value = payload.get("storage_cost_estimate")
+    raw_estimate = estimate_value if isinstance(estimate_value, dict) else {}
     estimate_components: dict[str, dict[str, int | float]] = {}
     for component_id in ("standard", "infrequent_access"):
         fallback_component = fallback_estimate[component_id]
-        raw_component = (
-            raw_estimate.get(component_id)
-            if isinstance(raw_estimate.get(component_id), dict)
-            else {}
-        )
+        component_value = raw_estimate.get(component_id)
+        raw_component = component_value if isinstance(component_value, dict) else {}
         estimate_components[component_id] = {
             field: _safe_non_negative_number(
                 raw_component.get(field), fallback_component[field]
@@ -576,19 +561,15 @@ def _vercel_billing_summary(
             {"source": "vercel_billing", "error_class": "invalid_adapter_result"}
         ]
 
-    raw_window = (
-        payload.get("window") if isinstance(payload.get("window"), dict) else {}
-    )
+    window_value = payload.get("window")
+    raw_window = window_value if isinstance(window_value, dict) else {}
     window = {
         "from": _safe_timestamp(raw_window.get("from"), fallback["window"]["from"]),
         "to": _safe_timestamp(raw_window.get("to"), fallback["window"]["to"]),
     }
     service_breakdown: list[dict[str, Any]] = []
-    raw_services = (
-        payload.get("service_breakdown")
-        if isinstance(payload.get("service_breakdown"), list)
-        else []
-    )
+    services_value = payload.get("service_breakdown")
+    raw_services = services_value if isinstance(services_value, list) else []
     for raw_service in raw_services[:100]:
         if not isinstance(raw_service, dict):
             continue
@@ -697,9 +678,8 @@ def _github_actions_summary(
             {"source": "github_actions_usage", "error_class": "invalid_adapter_result"}
         ]
 
-    raw_window = (
-        payload.get("window") if isinstance(payload.get("window"), dict) else {}
-    )
+    window_value = payload.get("window")
+    raw_window = window_value if isinstance(window_value, dict) else {}
     window: dict[str, Any] = {
         "year": _safe_optional_non_negative_number(raw_window.get("year")),
         "month": _safe_optional_non_negative_number(raw_window.get("month")),

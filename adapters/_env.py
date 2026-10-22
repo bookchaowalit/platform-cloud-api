@@ -7,12 +7,13 @@ root (git-ignored) is loaded by ``load_env`` without overriding the shell.
 
 import os
 from pathlib import Path
+from typing import Any
 
 # adapters/ -> cloud-api repository root
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_env():
+def load_env() -> None:
     """Load an optional repository-root ``.env`` into os.environ (idempotent)."""
     env_path = PROJECT_ROOT / ".env"
     if not env_path.exists():
@@ -28,7 +29,7 @@ def load_env():
                 os.environ[key] = value.strip()
 
 
-def _looks_like_secret(key):
+def _looks_like_secret(key: str) -> bool:
     """Identify credential-shaped env names without treating normal config as secrets."""
     name = key.upper()
     markers = (
@@ -47,7 +48,7 @@ def _looks_like_secret(key):
     return any(name.endswith(marker) for marker in markers)
 
 
-def get_env(key, default=None, required=False):
+def get_env(key: str, default: Any = None, required: bool = False) -> Any:
     """Get config; credential-shaped names resolve through the secret provider."""
     if _looks_like_secret(key):
         return get_secret(key, default=default, required=required)
@@ -59,7 +60,7 @@ def get_env(key, default=None, required=False):
     return value
 
 
-def get_secret(key, default=None, required=False):
+def get_secret(key: str, default: Any = None, required: bool = False) -> Any:
     """Resolve a secret from the configured runtime provider or env fallback."""
     from secret_resolver import SecretUnavailable, get_secret as resolve_secret
 

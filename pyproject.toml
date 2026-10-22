@@ -1,0 +1,61 @@
+[project]
+name = "solo-empire-cloud-api"
+version = "0.1.0"
+description = "Local Cloud / PaaS admin API: sanitized usage, inventory and governed PaaS actions"
+requires-python = ">=3.12"
+# Runtime dependency of the adapters (registry/cloud-providers.yaml, account metadata).
+# Everything else is the standard library.
+dependencies = [
+    "PyYAML>=6.0.2,<7",
+    "sentry-sdk>=2.72,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=7",
+    "mypy>=2.4",
+    "types-PyYAML>=6",
+]
+
+[tool.uv]
+# Not an installable package: run from a checkout (`python3 server.py`). uv.lock pins the
+# dependencies only.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+
+[tool.coverage.run]
+source = ["server", "error_reporting", "adapters"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["server.py", "error_reporting.py", "adapters", "tests"]
+# The adapters are a flat directory of modules that import each other by bare name.
+mypy_path = ["adapters", "tests", "tests/support"]
+explicit_package_bases = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+# Service code: mypy --strict (the global-only strict flags are set above). tests/ stays gradual:
+# its test methods are unannotated, so mypy checks only their call sites.
+[[tool.mypy.overrides]]
+module = [
+    "server", "error_reporting", "_env", "auth_resolver", "cloud_providers", "cloud_read_adapters", "cloud_usage",
+    "cloudflare_r2_usage", "decision_store", "free_quota", "github_actions_usage", "paas_action",
+    "paas_execute", "paas_health", "paas_inventory", "platform_output", "recurring_step",
+    "render_preflight", "secret_resolver", "task_store", "vercel_billing",
+]
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_reexport = true
+warn_return_any = true

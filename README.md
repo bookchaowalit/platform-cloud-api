@@ -63,3 +63,14 @@ Run the deterministic backend tests with:
 ```bash
 python3 -m unittest discover -s tests -p '*test*.py'
 ```
+
+Dependencies are pinned in `uv.lock` (`pyproject.toml` lists them; the repository is not an
+installable package). The same checks CI runs:
+
+```bash
+uv sync --frozen --all-extras
+uvx ruff@0.17.1 check . && uvx ruff@0.17.1 format --check . && uv run mypy . && uv run python -m pytest -q
+```
+
+Sentry error reporting is opt-in: it stays off unless `SENTRY_DSN` is set (then `sentry-sdk` from
+the lock must be installed).

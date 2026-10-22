@@ -21,17 +21,17 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from collections.abc import Callable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 from platform_output import configure_utf8_stdio  # noqa: E402
-from cloud_providers import (
+from cloud_providers import (  # noqa: E402
     get_provider as _get_provider,
     load_registry as _load_registry,
-)  # noqa: E402
+)
 from auth_resolver import AuthResolution, resolve_provider_auth  # noqa: E402
 from _env import get_env  # noqa: E402
 
@@ -312,7 +312,8 @@ CHECKERS: dict[
 
 def check_provider(provider: dict[str, Any], live: bool = False) -> dict[str, Any]:
     result = _base_result(provider)
-    checker = CHECKERS.get(provider.get("health_check"))
+    # load_registry validated health_check; a missing or unknown one gives None below.
+    checker = CHECKERS.get(cast("str", provider.get("health_check")))
     if checker is None:
         result["status"] = "unknown"
         result["error_class"] = "unsupported_health_check"

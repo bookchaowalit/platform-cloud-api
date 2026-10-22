@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from task_store import (
     ClientConfigError,
@@ -59,6 +59,10 @@ def decisions_api_url(environ: Any = None) -> str:
         ) from None
 
 
+# ApiDecisionStore has a method named ``list``, which shadows the builtin inside its class body.
+_Rows = list[dict[str, Any]]
+
+
 class ApiDecisionStore:
     """Stdlib HTTP client for the decisions API."""
 
@@ -86,8 +90,8 @@ class ApiDecisionStore:
         method: str,
         path: str,
         body: Any = None,
-        params: dict | None = None,
-        headers: dict | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> Any:
         clean = {k: v for k, v in (params or {}).items() if v is not None}
         query = f"?{urllib.parse.urlencode(clean, doseq=True)}" if clean else ""
@@ -135,13 +139,13 @@ class ApiDecisionStore:
         limit: int = 100,
         offset: int = 0,
         **filters: Any,
-    ) -> list[dict[str, Any]]:
+    ) -> _Rows:
         params: dict[str, Any] = {"limit": limit, "offset": offset, **filters}
         if status:
             params["status"] = [status] if isinstance(status, str) else list(status)
-        return self._call("GET", "/v1/decisions", params=params)["items"]
+        return cast("_Rows", self._call("GET", "/v1/decisions", params=params)["items"])
 
-    def all(self, **filters: Any) -> list[dict[str, Any]]:
+    def all(self, **filters: Any) -> _Rows:
         out: list[dict[str, Any]] = []
         while True:
             page = self.list(limit=500, offset=len(out), **filters)
@@ -150,13 +154,19 @@ class ApiDecisionStore:
                 return out
 
     def stats(self, group_by: str = "status") -> dict[str, int]:
-        return self._call("GET", "/v1/decisions/stats", params={"group_by": group_by})[
-            "groups"
-        ]
+        return cast(
+            "dict[str, int]",
+            self._call("GET", "/v1/decisions/stats", params={"group_by": group_by})[
+                "groups"
+            ],
+        )
 
     def get(self, decision_id: int) -> dict[str, Any] | None:
         try:
-            return self._call("GET", f"/v1/decisions/{int(decision_id)}")
+            return cast(
+                "dict[str, Any] | None",
+                self._call("GET", f"/v1/decisions/{int(decision_id)}"),
+            )
         except DecisionStoreError as exc:
             if exc.status == 404:
                 return None
@@ -164,8 +174,11 @@ class ApiDecisionStore:
 
     def by_dedupe(self, key: str) -> dict[str, Any] | None:
         try:
-            return self._call(
-                "GET", f"/v1/decisions/dedupe/{urllib.parse.quote(key, safe='')}"
+            return cast(
+                "dict[str, Any] | None",
+                self._call(
+                    "GET", f"/v1/decisions/dedupe/{urllib.parse.quote(key, safe='')}"
+                ),
             )
         except DecisionStoreError as exc:
             if exc.status == 404:
@@ -181,7 +194,9 @@ class ApiDecisionStore:
     ) -> dict[str, Any]:
         body = {**fields, **({"event": event} if event else {})}
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
-        return self._call("POST", "/v1/decisions", body, headers=headers)
+        return cast(
+            "dict[str, Any]", self._call("POST", "/v1/decisions", body, headers=headers)
+        )
 
     def upsert(
         self,
@@ -212,7 +227,10 @@ class ApiDecisionStore:
             body["event"] = event
         if expected_version is not None:
             body["expected_version"] = expected_version
-        return self._call("PATCH", f"/v1/decisions/{int(decision_id)}", body)
+        return cast(
+            "dict[str, Any]",
+            self._call("PATCH", f"/v1/decisions/{int(decision_id)}", body),
+        )
 
     def delete(self, decision_id: int) -> None:
         self._call("DELETE", f"/v1/decisions/{int(decision_id)}")
@@ -228,23 +246,31 @@ class ApiDecisionStore:
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._call(
-            "POST",
-            f"/v1/decisions/{int(decision_id)}/events",
-            {
-                "event_type": event_type,
-                "actor": actor,
-                "reason": reason,
-                "metadata": metadata or {},
-            },
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "POST",
+                f"/v1/decisions/{int(decision_id)}/events",
+                {
+                    "event_type": event_type,
+                    "actor": actor,
+                    "reason": reason,
+                    "metadata": metadata or {},
+                },
+            ),
         )
 
-    def events(self, decision_id: int, limit: int = 100) -> list[dict[str, Any]]:
-        return self._call(
-            "GET", f"/v1/decisions/{int(decision_id)}/events", params={"limit": limit}
-        )["items"]
+    def events(self, decision_id: int, limit: int = 100) -> _Rows:
+        return cast(
+            "_Rows",
+            self._call(
+                "GET",
+                f"/v1/decisions/{int(decision_id)}/events",
+                params={"limit": limit},
+            )["items"],
+        )
 
-    def history(self, decision_id: int) -> list[dict[str, Any]]:
+    def history(self, decision_id: int) -> _Rows:
         """Every event of one decision, oldest first (paged, never truncated)."""
         out: list[dict[str, Any]] = []
         while True:
@@ -267,12 +293,15 @@ class ApiDecisionStore:
         event_type: str | None = None,
         since: str | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        return self._call(
-            "GET",
-            "/v1/decision-events",
-            params={"event_type": event_type, "since": since, "limit": limit},
-        )["items"]
+    ) -> _Rows:
+        return cast(
+            "_Rows",
+            self._call(
+                "GET",
+                "/v1/decision-events",
+                params={"event_type": event_type, "since": since, "limit": limit},
+            )["items"],
+        )
 
     # --- reviews -----------------------------------------------------------------------------
 
@@ -283,21 +312,27 @@ class ApiDecisionStore:
         decision_id: int | None = None,
         due_on_or_before: str | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        return self._call(
-            "GET",
-            "/v1/decision-reviews",
-            params={
-                "status": status,
-                "decision_id": decision_id,
-                "due_on_or_before": due_on_or_before,
-                "limit": limit,
-            },
-        )["items"]
+    ) -> _Rows:
+        return cast(
+            "_Rows",
+            self._call(
+                "GET",
+                "/v1/decision-reviews",
+                params={
+                    "status": status,
+                    "decision_id": decision_id,
+                    "due_on_or_before": due_on_or_before,
+                    "limit": limit,
+                },
+            )["items"],
+        )
 
     def review(self, review_id: int) -> dict[str, Any] | None:
         try:
-            return self._call("GET", f"/v1/decision-reviews/{int(review_id)}")
+            return cast(
+                "dict[str, Any] | None",
+                self._call("GET", f"/v1/decision-reviews/{int(review_id)}"),
+            )
         except DecisionStoreError as exc:
             if exc.status == 404:
                 return None
@@ -321,7 +356,10 @@ class ApiDecisionStore:
         body = dict(fields)
         if expected_version is not None:
             body["expected_version"] = expected_version
-        return self._call("PATCH", f"/v1/decision-reviews/{int(review_id)}", body)
+        return cast(
+            "dict[str, Any]",
+            self._call("PATCH", f"/v1/decision-reviews/{int(review_id)}", body),
+        )
 
 
 def open_decision_store(

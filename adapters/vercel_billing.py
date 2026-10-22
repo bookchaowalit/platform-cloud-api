@@ -27,7 +27,7 @@ import urllib.request
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -255,25 +255,24 @@ def _aggregate(lines: Iterable[Any]) -> dict[str, Any]:
     def rounded(values: dict[str, float]) -> dict[str, float]:
         return {key: round(value, 4) for key, value in sorted(values.items())}
 
-    service_breakdown = []
-    for row in sorted(
-        services.values(),
-        key=lambda item: (
-            str(item["service_name"]),
-            str(item["charge_category"]),
-            str(item["currency"]),
-        ),
-    )[:100]:
-        service_breakdown.append(
-            {
-                "service_name": row["service_name"],
-                "charge_category": row["charge_category"],
-                "currency": row["currency"],
-                "charge_count": int(row["charge_count"]),
-                "billed_cost": round(float(row["billed_cost"]), 4),
-                "effective_cost": round(float(row["effective_cost"]), 4),
-            }
-        )
+    service_breakdown = [
+        {
+            "service_name": row["service_name"],
+            "charge_category": row["charge_category"],
+            "currency": row["currency"],
+            "charge_count": int(row["charge_count"]),
+            "billed_cost": round(float(row["billed_cost"]), 4),
+            "effective_cost": round(float(row["effective_cost"]), 4),
+        }
+        for row in sorted(
+            services.values(),
+            key=lambda item: (
+                str(item["service_name"]),
+                str(item["charge_category"]),
+                str(item["currency"]),
+            ),
+        )[:100]
+    ]
     return {
         "charge_count": charge_count,
         "billed_cost_by_currency": rounded(billed),
@@ -282,7 +281,9 @@ def _aggregate(lines: Iterable[Any]) -> dict[str, Any]:
     }
 
 
-def _base(*, live: bool, window: dict[str, str | None] | None = None) -> dict[str, Any]:
+def _base(
+    *, live: bool, window: Mapping[str, str | None] | None = None
+) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "provider": "vercel",
@@ -313,7 +314,7 @@ def _base(*, live: bool, window: dict[str, str | None] | None = None) -> dict[st
 
 
 def empty_result(
-    *, live: bool = False, window: dict[str, str | None] | None = None
+    *, live: bool = False, window: Mapping[str, str | None] | None = None
 ) -> dict[str, Any]:
     """Return a stable sanitized result for offline or unavailable states."""
     return _base(live=live, window=window)
@@ -342,7 +343,7 @@ def _next_action_for_error(error_class: str) -> str:
 def _live_error(
     error_class: str,
     *,
-    window: dict[str, str | None] | None = None,
+    window: Mapping[str, str | None] | None = None,
     team_scope_configured: bool = False,
     auth_source: str | None = None,
 ) -> dict[str, Any]:
@@ -360,7 +361,7 @@ def _live_error(
 
 def _not_configured_result(
     *,
-    window: dict[str, str | None] | None = None,
+    window: Mapping[str, str | None] | None = None,
     error_class: str = "credentials_not_configured",
     auth_source: str | None = None,
 ) -> dict[str, Any]:

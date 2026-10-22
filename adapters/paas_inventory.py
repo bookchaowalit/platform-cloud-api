@@ -23,13 +23,9 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from platform_output import configure_utf8_stdio  # noqa: E402
 from auth_resolver import AuthResolution, resolve_provider_auth  # noqa: E402
 from cloud_providers import get_provider as _get_provider  # noqa: E402
-from paas_health import (
-    _get_json,
-    _load_registry,
-    _post_json,
-    _safe_error,
-    get_env,
-)
+from cloud_providers import load_registry as _load_registry  # noqa: E402
+from paas_health import _get_json, _post_json, _safe_error  # noqa: E402
+from _env import get_env  # noqa: E402
 
 
 SCHEMA_VERSION = "solo-empire.paas-inventory.v1"
@@ -184,11 +180,8 @@ def _vercel(provider: dict[str, Any], live: bool) -> dict[str, Any]:
             f"https://api.vercel.com/v9/projects?{query}",
             {"Authorization": f"Bearer {token}"},
         )
-        projects = (
-            payload.get("projects")
-            if isinstance(payload, dict) and isinstance(payload.get("projects"), list)
-            else []
-        )
+        raw_projects = payload.get("projects") if isinstance(payload, dict) else None
+        projects = raw_projects if isinstance(raw_projects, list) else []
         resources = [
             {
                 "id": item.get("id"),
@@ -308,19 +301,20 @@ def _railway(provider: dict[str, Any], live: bool) -> dict[str, Any]:
             result["status"] = "error"
             result["error_class"] = "railway_graphql_error"
             return result
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        root = data.get(root_key) if isinstance(data.get(root_key), dict) else {}
+        raw_data = payload.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        raw_root = data.get(root_key)
+        root = raw_root if isinstance(raw_root, dict) else {}
         if root_key == "workspace":
+            raw_projects_root = root.get("projects")
             projects_root = (
-                root.get("projects") if isinstance(root.get("projects"), dict) else {}
+                raw_projects_root if isinstance(raw_projects_root, dict) else {}
             )
-            edges = (
-                projects_root.get("edges")
-                if isinstance(projects_root.get("edges"), list)
-                else []
-            )
+            raw_edges = projects_root.get("edges")
+            edges = raw_edges if isinstance(raw_edges, list) else []
         else:
-            edges = root.get("edges") if isinstance(root.get("edges"), list) else []
+            raw_edges = root.get("edges")
+            edges = raw_edges if isinstance(raw_edges, list) else []
         resources = [
             {
                 "id": edge.get("node", {}).get("id"),
@@ -368,11 +362,8 @@ def _fly(provider: dict[str, Any], live: bool) -> dict[str, Any]:
             f"https://api.machines.dev/v1/apps?{query}",
             {"Authorization": f"Bearer {token}"},
         )
-        apps = (
-            payload.get("apps")
-            if isinstance(payload, dict) and isinstance(payload.get("apps"), list)
-            else []
-        )
+        raw_apps = payload.get("apps") if isinstance(payload, dict) else None
+        apps = raw_apps if isinstance(raw_apps, list) else []
         resources = [
             {
                 "id": item.get("id"),
@@ -417,8 +408,10 @@ def _heroku(provider: dict[str, Any], live: bool) -> dict[str, Any]:
         for item in payload if isinstance(payload, list) else []:
             if not isinstance(item, dict):
                 continue
-            region = item.get("region") if isinstance(item.get("region"), dict) else {}
-            stack = item.get("stack") if isinstance(item.get("stack"), dict) else {}
+            raw_region = item.get("region")
+            region = raw_region if isinstance(raw_region, dict) else {}
+            raw_stack = item.get("stack")
+            stack = raw_stack if isinstance(raw_stack, dict) else {}
             resources.append(
                 {
                     "id": item.get("id"),

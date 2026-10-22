@@ -15,7 +15,7 @@ import sqlite3
 import sys
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 # Safety: a test that imports this double must never reach the live decisions API.
 os.environ.pop("EMPIRE_DECISIONS_API", None)
@@ -70,6 +70,10 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
+# SqliteDecisionStore has a method named ``list``, which shadows the builtin inside its class body.
+_Rows = list[dict[str, Any]]
+
+
 class SqliteDecisionStore:
     """Same methods and shapes as ``ApiDecisionStore`` (ids are integers, refs a list)."""
 
@@ -87,6 +91,10 @@ class SqliteDecisionStore:
                 )
         self.conn.commit()
 
+    @overload
+    def _record(self, row: sqlite3.Row) -> dict[str, Any]: ...
+    @overload
+    def _record(self, row: None) -> None: ...
     def _record(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
@@ -101,6 +109,10 @@ class SqliteDecisionStore:
         data["metadata"] = json.loads(data.get("metadata") or "{}")
         return data
 
+    @overload
+    def _review(self, row: sqlite3.Row) -> dict[str, Any]: ...
+    @overload
+    def _review(self, row: None) -> None: ...
     def _review(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
@@ -163,7 +175,7 @@ class SqliteDecisionStore:
         limit: int = 100,
         offset: int = 0,
         **filters: Any,
-    ) -> list[dict[str, Any]]:
+    ) -> _Rows:
         where, params = ["1=1"], []
         statuses = [status] if isinstance(status, str) else list(status or [])
         if statuses:
@@ -193,7 +205,7 @@ class SqliteDecisionStore:
         )
         return [self._record(r) for r in rows]
 
-    def all(self, **filters: Any) -> list[dict[str, Any]]:
+    def all(self, **filters: Any) -> _Rows:
         return self.list(limit=1_000_000, **filters)
 
     def stats(self, group_by: str = "status") -> dict[str, int]:
@@ -235,7 +247,9 @@ class SqliteDecisionStore:
             )
         except sqlite3.IntegrityError as exc:
             raise DecisionStoreError(409, "conflict") from exc
+        assert cursor.lastrowid is not None  # an INSERT always sets it
         row = self.get(cursor.lastrowid)
+        assert row is not None  # just inserted
         self._insert_event(
             row["id"], event or {"event_type": "created", "actor": "api"}, None, row
         )
@@ -309,6 +323,7 @@ class SqliteDecisionStore:
                 after,
             )
         self.conn.commit()
+        assert after is not None  # the row was read above and is never deleted here
         return after
 
     def delete(self, decision_id: int) -> None:
@@ -345,7 +360,7 @@ class SqliteDecisionStore:
         self.conn.commit()
         return self.events(decision_id, limit=1)[0]
 
-    def events(self, decision_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    def events(self, decision_id: int, limit: int = 100) -> _Rows:
         rows = self.conn.execute(
             "SELECT * FROM decision_events WHERE decision_id = ? ORDER BY created_at DESC, id DESC"
             " LIMIT ?",
@@ -353,7 +368,7 @@ class SqliteDecisionStore:
         )
         return [self._event(r) for r in rows]
 
-    def history(self, decision_id: int) -> list[dict[str, Any]]:
+    def history(self, decision_id: int) -> _Rows:
         rows = self.conn.execute(
             "SELECT * FROM decision_events WHERE decision_id = ? ORDER BY id",
             (int(decision_id),),
@@ -366,7 +381,7 @@ class SqliteDecisionStore:
         event_type: str | None = None,
         since: str | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
+    ) -> _Rows:
         where, params = ["1=1"], []
         if event_type:
             where.append("event_type = ?")
@@ -390,7 +405,7 @@ class SqliteDecisionStore:
         decision_id: int | None = None,
         due_on_or_before: str | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
+    ) -> _Rows:
         where, params = ["1=1"], []
         for name, value in (("status", status), ("decision_id", decision_id)):
             if value is not None:

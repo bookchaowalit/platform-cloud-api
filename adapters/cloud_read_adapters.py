@@ -8,7 +8,8 @@ import math
 import re
 import urllib.error
 import urllib.request
-from typing import Any
+from http.client import HTTPMessage
+from typing import IO, Any
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
@@ -41,7 +42,15 @@ class CloudReadError(Exception):
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
         return None
 
 
@@ -178,7 +187,7 @@ def _neon(read: Callable[[str], Any]) -> dict[str, Any]:
     detail_errors = []
     for index, project in enumerate(projects[:MAX_ITEMS]):
         project_id = _identifier(project.get("id"))
-        item = {
+        item: dict[str, Any] = {
             "id": project_id,
             "type": "project",
             "name": _text(project.get("name")),
@@ -272,7 +281,7 @@ def _cloudflare(read: Callable[[str], Any], account_id: str) -> dict[str, Any]:
                 or (pages is not None and pages > 1)
             )
             for item in items[:MAX_ITEMS]:
-                projected = {
+                projected: dict[str, Any] = {
                     "id": _identifier(item.get("id") or item.get("name")),
                     "type": kind,
                     "name": _text(item.get("name")),

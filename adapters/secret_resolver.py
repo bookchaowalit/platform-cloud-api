@@ -25,7 +25,7 @@ import urllib.request
 from functools import lru_cache
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, TypeVar
 
 
 DEFAULT_INFISICAL_PROJECT_ID = "d0d84520-c3d0-48da-980c-a987c3077122"
@@ -443,7 +443,10 @@ class VaultProvider:
         return str(value) if value is not None and str(value) != "" else None
 
 
-def _provider(name: str):
+_ProviderT = TypeVar("_ProviderT")
+
+
+def _provider(name: str) -> EnvProvider | InfisicalProvider | VaultProvider:
     if name == "env":
         return EnvProvider()
     if name in {"infisical", "infisical-api", "infisical-cli"}:
@@ -483,7 +486,7 @@ def get_secret_with_source(
         )
     )
 
-    def prepare_provider(provider):
+    def prepare_provider(provider: _ProviderT) -> _ProviderT:
         if isinstance(provider, InfisicalProvider):
             provider.secret_path = secret_path
             provider.project_id = SECRET_PROJECT_BY_KEY.get(name, provider.project_id)
@@ -493,9 +496,12 @@ def get_secret_with_source(
         value = env_provider.get(name)
         source = "env" if value else None
     elif mode == "auto":
-        candidates = [prepare_provider(InfisicalProvider()), VaultProvider()]
+        candidates: list[InfisicalProvider | VaultProvider] = [
+            prepare_provider(InfisicalProvider()),
+            VaultProvider(),
+        ]
         value = None
-        configured_provider = None
+        configured_provider: InfisicalProvider | VaultProvider | None = None
         for candidate in candidates:
             if candidate.is_configured():
                 configured_provider = candidate
@@ -614,8 +620,7 @@ def probe_secrets(names: tuple[str, ...] | list[str] | None = None) -> dict[str,
     elif any(s == STATUS_PROVIDER_UNREACHABLE for s in statuses):
         overall = STATUS_PROVIDER_UNREACHABLE
     elif (
-        mode not in {"env", "auto"}
-        and not configured
+        (mode not in {"env", "auto"} and not configured)
         or (
             mode == "auto"
             and isinstance(provider, EnvProvider)

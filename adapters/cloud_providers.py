@@ -7,7 +7,7 @@ import argparse
 import re
 import sys
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, TypeGuard
 
 import yaml
 
@@ -27,7 +27,7 @@ class CloudProviderRegistryError(ValueError):
     """Raised when the cloud provider registry violates its contract."""
 
 
-def _string_list(value: Any) -> bool:
+def _string_list(value: Any) -> TypeGuard[list[str]]:
     return isinstance(value, list) and all(
         isinstance(item, str) and item.strip() for item in value
     )
@@ -37,9 +37,11 @@ def _validate_env_names(value: Any, label: str, errors: list[str]) -> None:
     if not _string_list(value):
         errors.append(f"{label} must be a list of environment variable names")
         return
-    for name in value:
-        if not ENV_NAME_PATTERN.fullmatch(name):
-            errors.append(f"{label} contains an invalid environment variable name")
+    errors.extend(
+        f"{label} contains an invalid environment variable name"
+        for name in value
+        if not ENV_NAME_PATTERN.fullmatch(name)
+    )
 
 
 def validate_registry(payload: Any) -> list[str]:
@@ -57,7 +59,7 @@ def validate_registry(payload: Any) -> list[str]:
 
     providers = payload.get("providers")
     if not isinstance(providers, list) or not providers:
-        return errors + ["providers must be a non-empty list"]
+        return [*errors, "providers must be a non-empty list"]
 
     seen_ids: set[str] = set()
     for index, provider in enumerate(providers):
@@ -76,9 +78,11 @@ def validate_registry(payload: Any) -> list[str]:
         else:
             seen_ids.add(provider_id)
 
-        for field in ("name", "category"):
-            if not isinstance(provider.get(field), str) or not provider[field].strip():
-                errors.append(f"{label}.{field} must be a non-empty string")
+        errors.extend(
+            f"{label}.{field} must be a non-empty string"
+            for field in ("name", "category")
+            if not isinstance(provider.get(field), str) or not provider[field].strip()
+        )
 
         cli_binary = provider.get("cli_binary")
         if cli_binary is not None and (
@@ -183,9 +187,11 @@ def validate_registry(payload: Any) -> list[str]:
         if provider.get("paas") is True:
             if not isinstance(provider.get("health_check"), str):
                 errors.append(f"{label}.health_check is required for PaaS providers")
-            for field in ("read_capabilities", "write_capabilities"):
-                if not _string_list(provider.get(field)):
-                    errors.append(f"{label}.{field} must be a list of strings")
+            errors.extend(
+                f"{label}.{field} must be a list of strings"
+                for field in ("read_capabilities", "write_capabilities")
+                if not _string_list(provider.get(field))
+            )
             if provider.get("write_capabilities") != []:
                 errors.append(f"{label}.write_capabilities must be empty")
 
@@ -195,11 +201,11 @@ def validate_registry(payload: Any) -> list[str]:
                 f"{label}.optional_env must be a list of environment variable names"
             )
         else:
-            for name in optional_env:
-                if not ENV_NAME_PATTERN.fullmatch(name):
-                    errors.append(
-                        f"{label}.optional_env contains an invalid environment variable name"
-                    )
+            errors.extend(
+                f"{label}.optional_env contains an invalid environment variable name"
+                for name in optional_env
+                if not ENV_NAME_PATTERN.fullmatch(name)
+            )
 
         project_usage = provider.get("project_usage")
         if not isinstance(project_usage, list):
@@ -246,7 +252,8 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
     errors = validate_registry(payload)
     if errors:
         raise CloudProviderRegistryError("; ".join(errors))
-    return payload
+    registry: dict[str, Any] = payload  # validate_registry checked it is a mapping
+    return registry
 
 
 def auth_env_names(provider: dict[str, Any]) -> list[str]:
@@ -257,7 +264,8 @@ def auth_env_names(provider: dict[str, Any]) -> list[str]:
 def get_provider(provider_id: str) -> dict[str, Any]:
     for provider in load_registry()["providers"]:
         if provider.get("id") == provider_id:
-            return provider
+            found: dict[str, Any] = provider
+            return found
     raise KeyError(f"Unknown cloud provider: {provider_id}")
 
 
