@@ -35,9 +35,13 @@ flowchart TD
   EX --> R{"Result"}
   R -->|"200 attempt pending"| VE["POST commands: verify"]
   R -->|"409 gate code"| FIX["Fix cause or register again"]
+  R -->|"200 submission_unknown or verification_required"| RC
   R -->|"503 command_result_unknown"| RC["POST commands: reconcile"]
-  VE --> DONE["action_status executed or failed"]
-  RC --> DONE
+  VE --> T{"attempt status terminal?"}
+  RC --> T
+  T -->|"executed or failed"| DONE["Done"]
+  T -->|"still nonterminal"| POLL["Poll verify or reconcile again, or inspect in Render dashboard"]
+  POLL --> T
 ```
 
 ## Flow 3 — Health check
