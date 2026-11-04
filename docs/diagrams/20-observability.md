@@ -6,7 +6,7 @@ Instrumentation ที่มีจริงใน code:
 |---|---|---|---|
 | Sentry errors (opt-in) | `error_reporting.py` `init_sentry`, `capture` | exceptions ที่ API แปลงเป็น 500 `internal_error` หรือ 503 `command_result_unknown`; tag `service=cloud-api`; errors only (`traces_sample_rate=None`), scrubbed | Sentry project ([ต้องยืนยัน] ว่าตั้ง DSN บนเครื่อง owner) |
 | Startup line | `serve`, `init_sentry` | `solo-empire-cloud-api listening on http://host:port`; `sentry: enabled for cloud-api` (stderr) | terminal ของ owner |
-| Access log | `RequestHandler.log_message` | method + path (ตัด query) + status; ไม่มี body / auth | terminal ของ owner |
+| Access log | `RequestHandler.log_message` | method + path ไม่มี query ต่อด้วย `format % args` ซึ่งปกติคือ request line เต็ม จึงยังพิมพ์ query string (gap); ไม่มี body / auth | terminal ของ owner |
 | Health | `GET /health` | status, service, schema_version, environment, timestamp | owner-web? ([ต้องยืนยัน]); ไม่มี uptime monitor (service เป็น local) |
 | Per-provider status in payload | `cloud_usage`, `paas_inventory` | `configured` / `not_configured` / `error` + `error_class` per provider | owner บน Cloud page |
 | Decision events | decisions API | `created`, `approved`, `refreshed`, `completed` + attempt metadata, `X-Correlation-Id` | decision history (`operation=status`) |

@@ -13,7 +13,7 @@ flowchart LR
   LOSS["Owner machine lost"] --> CL["git clone platform-cloud-api"]
   CL --> SY["uv sync --frozen --all-extras"]
   SY --> CFG["Restore env: CLOUD_API_TOKEN, SECRETS_PROVIDER, EMPIRE_DECISIONS_API, automation tokens"]
-  CFG --> RUN["python3 server.py"]
+  CFG --> RUN["uv run python server.py"]
   RUN --> HC["GET /health"]
   DEC["Decision history"] -.->|"restored by decisions cell, not here"| RUN
 ```
