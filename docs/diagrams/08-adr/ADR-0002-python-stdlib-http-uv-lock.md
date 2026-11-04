@@ -17,7 +17,7 @@ Service เล็ก ใช้คนเดียว ต้องการ attack
 ## Consequences
 
 - Body / Content-Length / Transfer-Encoding limit ต้องเขียนเอง (`RequestHandler._dispatch`, `MAX_BODY_BYTES = 16 KiB`)
-- HTTP client ทั้งหมดเป็น `urllib.request` พร้อม `_NoRedirect` handlers
+- HTTP client ทั้งหมดเป็น `urllib.request`; `_NoRedirect` handlers ใช้ใน `task_store.py`, `cloud_read_adapters.py`, `paas_execute.py` แต่ live inventory reads (`paas_health.py` `_get_json`/`_post_json`) ใช้ `urlopen` ธรรมดาที่ตาม redirect
 
 ## Evidence
 

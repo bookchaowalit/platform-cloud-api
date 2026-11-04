@@ -39,7 +39,7 @@ flowchart TD
   R -->|"503 command_result_unknown"| RC["POST commands: reconcile"]
   VE --> T{"attempt status terminal?"}
   RC --> T
-  T -->|"executed or failed"| DONE["Done"]
+  T -->|"attempt succeeded or failed (action_status executed or failed)"| DONE["Done"]
   T -->|"still nonterminal"| POLL["Poll verify or reconcile again, or inspect in Render dashboard"]
   POLL --> T
 ```
